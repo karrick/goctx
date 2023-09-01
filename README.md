@@ -35,7 +35,7 @@ func ExampleAllOf() {
         wg.Done()
     }(derivedCtx)
 
-	// Check the number of outstanding composed contexts to be closed.
+    // Check the number of outstanding composed contexts to be closed.
     fmt.Println("count", allOf.Count())
 
     // New contexts may be added to the AllOf instance even after started
@@ -52,38 +52,38 @@ func ExampleAllOf() {
     // For example purposes, wait until dervied context has closed.
     wg.Wait()
 
-	// Check the number of outstanding composed contexts to be closed.
+    // Check the number of outstanding composed contexts to be closed.
     fmt.Println("count", allOf.Count())
-	fmt.Println("derived error", derivedCtx.Err())
+    fmt.Println("derived error", derivedCtx.Err())
 
-	// Because the order in which the cancellations take place are
-	// non-deterministic, this test needs to check each potential cause, and
-	// make sure at least one of them matches the cause reported by the
-	// derived context.
-	got := context.Cause(derivedCtx)
+    // Because the order in which the cancellations take place are
+    // non-deterministic, this test needs to check each potential cause, and
+    // make sure at least one of them matches the cause reported by the
+    // derived context.
+    got := context.Cause(derivedCtx)
 
-	causes := []error{
-		errors.New("reason 1"),
-		errors.New("reason 2"),
-		errors.New("context canceled"), // cancel3 was invoked with nil cause
-	}
+    causes := []error{
+        errors.New("reason 1"),
+        errors.New("reason 2"),
+        errors.New("context canceled"), // cancel3 was invoked with nil cause
+    }
 
-	var found bool
-	for _, want := range causes {
-		if got.Error() == want.Error() {
-			found = true
-			break
-		}
-	}
+    var found bool
+    for _, want := range causes {
+        if got.Error() == want.Error() {
+            found = true
+            break
+        }
+    }
 
-	if found != true {
-		fmt.Printf("GOT: %v; WANT: %v", got, causes)
-	}
+    if found != true {
+        fmt.Printf("GOT: %v; WANT: %v", got, causes)
+    }
 
-	// Output:
-	// count 2
-	// count 0
-	// derived error context canceled
+    // Output:
+    // count 2
+    // count 0
+    // derived error context canceled
 }
 ```
 
