@@ -10,16 +10,15 @@ import (
 // AllOf provides a context.Context that is canceled only after all of the
 // added context.Context instances have been canceled.
 type AllOf struct {
-	ctx  context.Context
-	done chan struct{}
-	err  atomic.Pointer[error]
+	ctx context.Context
+	err atomic.Pointer[error]
 
 	// The composite pair of fields cv and count cooperate in order to act as
 	// a wait-group, with the difference that it allows the Add method to
 	// return an error when the AllOf has already completed.
 	//
-	// NOTE: sync.Cond must not be copied, so allocate seperately from AllOf
-	// in case upstream copies the AllOf value.
+	// NOTE: sync.Cond must not be copied, so this structure allocates this
+	// field seperately from AllOf in case upstream copies the AllOf value.
 	cv    *sync.Cond
 	count uint64
 }
@@ -114,71 +113,100 @@ func NewAllOf(contexts ...context.Context) (*AllOf, error) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 
 	allOf := &AllOf{
-		ctx:  ctx,
-		done: make(chan struct{}),
-
+		ctx:   ctx,
 		cv:    &sync.Cond{L: new(sync.Mutex)},
-		count: uint64(len(contexts)),
+		count: uint64(len(contexts)), // See note below why this must be initialized.
 	}
 
+	// NOTE: Because this AllOf does not yet have any contexts added to it,
+	// its count is zero. However, its public Add method returns an error when
+	// adding a context when the count is zero in order to protect against
+	// callers adding contexts to this Allof instance after it has
+	// closed. Therefore, invoke the private add method to add all the
+	// contexts provided to this at instantiation time. For this reason, the
+	// private add method does not increment the count, but rather it takes
+	// place in the public Add method. Which is why the instance's count field
+	// is initialized to the number of contexts it is initialized with.
 	for _, element := range contexts {
 		go allOf.add(element)
 	}
 
+	// Spawn a goroutine that will block until all of the parent contexts have
+	// closed, then after they all have, will cancel the derived context.
 	go func() {
-		// Wait until count is 0, indicating there are no more contexts being
-		// monitored.
+		// Identical to sync.WaitGroup.Wait(), wait until count is 0,
+		// indicating there are no more contexts being monitored.
 		allOf.cv.L.Lock()
 		for allOf.count > 0 {
+			// NOTE: When count is greater than zero, this goroutine should
+			// continue waiting for more goroutines to complete.
 			allOf.cv.Wait()
 		}
-		allOf.cv.L.Unlock()
 		// POST: All monitoring goroutines have terminated.
+		allOf.cv.L.Unlock()
 
-		// The done channel is not needed any more.
-		close(allOf.done)
-
-		// Stuff final non-nil error, or nil if no errors.
+		// Cancel the derived context using the error this AllOf instance
+		// stored from when its added contexts closed.
 		cancel(*allOf.err.Load())
 	}()
 
 	return allOf, nil
 }
 
-// add blocks until either ctx has completed, or the instance done channel has
-// been closed. After either of those conditions takes place, this method
-// decrements the count of contexts being waited for by one.
+// add blocks until ctx has completed, then decrements the count of goroutines
+// and their respective contexts being waited upon.
 func (allOf *AllOf) add(ctx context.Context) {
-	select {
-	case <-ctx.Done():
-		if err := context.Cause(ctx); err != nil {
-			allOf.err.CompareAndSwap(nil, &err)
-		}
-	case <-allOf.done:
-		//
-	}
+	<-ctx.Done()                        // Block here until ctx has closed.
+	err := context.Cause(ctx)           // Obtain the cause that the context was closed.
+	allOf.err.CompareAndSwap(nil, &err) // Remember the first error.
+	// allOf.err.Store(&err)				// Remember the final error.
 
-	// allOf.wg.Done()
+	// NOTE: At this point, the ctx has closed, but before this method returns
+	// and terminates, it must decrement the number of goroutines waiting on
+	// their respective context.Context instances to close.
+
+	// Identical to sync.WaitGroup.Done().
 	allOf.cv.L.Lock()
 	if allOf.count == 0 {
 		panic("negative condition variable")
 	}
 	allOf.count--
 	allOf.cv.L.Unlock()
-	allOf.cv.Broadcast()
+
+	// NOTE: This calls Signal rather than Broadcast because there is only a
+	// single goroutine that is blocked by calling Wait on the condition
+	// variable, and Signal will unblock that goroutine.
+	allOf.cv.Signal()
 }
 
 // Add causes AllOf to also wait until ctx has completed before it completes.
 func (allOf *AllOf) Add(ctx context.Context) error {
-	// allOf.wg.Add(1)
+	// This method needs this ability to prevent adding additional
+	// context.Context instances to the AllOf instance after the AllOf
+	// instance has already closed.
+	//
+	// Similar but not identical to sync.WaitGroup.Add(1), it performs the
+	// same function, but after locking the condition variable's mutex, it
+	// allows this AllOf struct the ability to branch on the number of
+	// goroutines being waited upon before incrementing and unlocking the
+	// condition variable's mutex.
 	allOf.cv.L.Lock()
 	if allOf.count == 0 {
 		return errors.New("cannot add after AllOf complete")
 	}
 	allOf.count++
 	allOf.cv.L.Unlock()
-	allOf.cv.Signal()
 
+	// NOTE: The following Signal invocation is part of the pattern of how a
+	// WaitGroup might be programmed, but because the only goroutine that is
+	// blocked by calling Wait is something waiting for count to equal zero,
+	// there is no point in waking it up when this knows the count is above
+	// zero.
+	//
+	// allOf.cv.Signal()			// ??? not necessary
+
+	// Spawn goroutine to wait for ctx to be closed, after which it will
+	// decrement count.
 	go allOf.add(ctx)
 
 	return nil
