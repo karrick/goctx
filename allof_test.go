@@ -165,40 +165,40 @@ func TestAllOf(t *testing.T) {
 
 		var wg sync.WaitGroup
 		wg.Add(1)
-		go func() {
-			ctx := allOf.Context()
-			select {
-			case <-ctx.Done():
-				// Ensure derived context has error and cause.
-				ensureError(t, ctx.Err(), context.Canceled.Error())
+		go func(ctx context.Context) {
+			<-ctx.Done()
 
-				// Because the order in which the cancellations take place are
-				// non-deterministic, this test needs to check each potential
-				// cause, and make sure at least one of them matches the cause
-				// reported by the derived context.
-				got := context.Cause(ctx)
+			// Ensure derived context has error and cause.
+			ensureError(t, ctx.Err(), context.Canceled.Error())
 
-				causes := []error{
-					io.EOF,
-					io.ErrShortBuffer,
-					io.ErrShortWrite,
-					io.ErrUnexpectedEOF,
-				}
+			// Even though this test case cancels contexts in a specific
+			// order, the order in which various goroutines are allowed to
+			// proceed are non-deterministic. Therefore, this test needs to
+			// check each potential cause, and make sure at least one of them
+			// matches the cause reported by the derived context.
+			got := context.Cause(ctx)
 
-				var found bool
-				for _, want := range causes {
-					if got == want {
-						found = true
-						break
-					}
-				}
+			causes := []error{
+				io.EOF,
+				io.ErrShortBuffer,
+				io.ErrShortWrite,
+				io.ErrUnexpectedEOF,
+			}
 
-				if found != true {
-					t.Errorf("GOT: %v; WANT: %v", got, causes)
+			var found bool
+			for _, want := range causes {
+				if got == want {
+					found = true
+					break
 				}
 			}
+
+			if found != true {
+				t.Errorf("GOT: %v; WANT: %v", got, causes)
+			}
+
 			wg.Done()
-		}()
+		}(allOf.Context())
 
 		cancel1(io.EOF)
 		allOf.Add(ctx3)

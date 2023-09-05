@@ -158,8 +158,7 @@ func NewAllOf(contexts ...context.Context) (*AllOf, error) {
 func (allOf *AllOf) add(ctx context.Context) {
 	<-ctx.Done()                        // Block here until ctx has closed.
 	err := context.Cause(ctx)           // Obtain the cause that the context was closed.
-	allOf.err.CompareAndSwap(nil, &err) // Remember the first error.
-	// allOf.err.Store(&err)				// Remember the final error.
+	allOf.err.Store(&err)				// Remember the final error.
 
 	// NOTE: At this point, the ctx has closed, but before this method returns
 	// and terminates, it must decrement the number of goroutines waiting on
@@ -197,13 +196,14 @@ func (allOf *AllOf) Add(ctx context.Context) error {
 	allOf.count++
 	allOf.cv.L.Unlock()
 
-	// NOTE: The following Signal invocation is part of the pattern of how a
-	// WaitGroup might be programmed, but because the only goroutine that is
-	// blocked by calling Wait is something waiting for count to equal zero,
-	// there is no point in waking it up when this knows the count is above
-	// zero.
-	//
-	// allOf.cv.Signal()			// ??? not necessary
+	// NOTE: When implementing a WaitGroup via condition variables, the next
+	// step would be to invoke the condition variable's Signal
+	// method. However, Signal is only used to signal to the Go runtime that
+	// the goroutines that have invoked Wait are eligible for running. This
+	// particular structure is implemented in such a way that the only
+	// goroutine that has implemented Wait on this condition variable is
+	// waiting for that condition variable count to be zero, and this method
+	// just incremented that value.
 
 	// Spawn goroutine to wait for ctx to be closed, after which it will
 	// decrement count.
