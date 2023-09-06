@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -208,5 +209,63 @@ func TestAllOf(t *testing.T) {
 		cancel4(io.ErrUnexpectedEOF)
 
 		wg.Wait()
+	})
+
+	t.Run("thousand", func(t *testing.T) {
+		const number = 1000
+		var counter uint32
+
+		// Create an initial context that will act as the original parent
+		// context for the AllOf instance. Once this test has a number of
+		// goroutines that have added their individual contexts to the AllOf
+		// instance, this can be canceled.
+		initialCtx, initialCancel := context.WithCancel(context.Background())
+
+		allOf, err := NewAllOf(initialCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Spawn a bunch of goroutines, each of which should create a
+		// cancelable context, add it to the AllOf instance, then block until
+		// signaled to continue by the primary test goroutine. After they
+		// continue, they will atomically increment a shared counter, then
+		// finally cancel their individual context prior to terminating.
+		var wg sync.WaitGroup
+		wg.Add(1)
+		for i := 0; i < number; i++ {
+			go func(wg *sync.WaitGroup, allOf *AllOf, counter *uint32) {
+				// Create and attach a local context to the AllOf instance.
+				ctx, cancel := context.WithCancel(context.Background())
+				allOf.Add(ctx)
+
+				// Wait until signaled to continue.
+				wg.Wait()
+
+				// Increment the shared counter.
+				atomic.AddUint32(counter, 1)
+
+				// Cancel individual context before terminating.
+				cancel()
+			}(&wg, allOf, &counter)
+		}
+
+		// Tell the spawned goroutines to continue, at which point they should
+		// commence their individual work of each incrementing the counter.
+		wg.Done()
+
+		// The initial context is no longer needed, because there are a number
+		// of spawned goroutines, each with their own context attached to the
+		// AllOf instance.
+		initialCancel()
+
+		// Wait for the derived context to be canceled, after which all
+		// spawned goroutines should have incremented the shared counter.
+		allOfCtx := allOf.Context()
+		<-allOfCtx.Done()
+
+		if got, want := atomic.LoadUint32(&counter), uint32(number); got != want {
+			t.Errorf("GOT: %v; WANT: %v", got, want)
+		}
 	})
 }
