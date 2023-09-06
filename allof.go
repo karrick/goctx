@@ -156,15 +156,24 @@ func NewAllOf(contexts ...context.Context) (*AllOf, error) {
 // add blocks until ctx has completed, then decrements the count of goroutines
 // and their respective contexts being waited upon.
 func (allOf *AllOf) add(ctx context.Context) {
-	<-ctx.Done()                        // Block here until ctx has closed.
-	err := context.Cause(ctx)           // Obtain the cause that the context was closed.
-	allOf.err.Store(&err)				// Remember the final error.
+	// Block until ctx has closed.
+	<-ctx.Done()
 
-	// NOTE: At this point, the ctx has closed, but before this method returns
-	// and terminates, it must decrement the number of goroutines waiting on
-	// their respective context.Context instances to close.
+	// When a context.Context is canceled, it stores the first error and cause
+	// because that is the error and cause that caused it to be
+	// canceled. However, the AllOf derived context is not canceled until all
+	// of its source contexts have been canceled, or in other words, its final
+	// source context is canceled. Therefore, rather than remembering the
+	// first error and cause, this remembers the error and cause of the final
+	// source context.
+	err := context.Cause(ctx)
+	allOf.err.Store(&err)
 
-	// Identical to sync.WaitGroup.Done().
+	// NOTE: At this point, the context has closed, but before this method
+	// returns and terminates, it must decrement the number of goroutines
+	// waiting on their respective context.Context instances to close. This
+	// logic is identical to how one might use a condition variable to
+	// implement sync.WaitGroup.Done().
 	allOf.cv.L.Lock()
 	if allOf.count == 0 {
 		panic("negative condition variable")
@@ -172,9 +181,9 @@ func (allOf *AllOf) add(ctx context.Context) {
 	allOf.count--
 	allOf.cv.L.Unlock()
 
-	// NOTE: This calls Signal rather than Broadcast because there is only a
-	// single goroutine that is blocked by calling Wait on the condition
-	// variable, and Signal will unblock that goroutine.
+	// NOTE: Call the condition variable's Signal rather than Broadcast method
+	// because there is only a single goroutine that is blocked by calling
+	// Wait on the condition variable, and Signal will unblock that goroutine.
 	allOf.cv.Signal()
 }
 
