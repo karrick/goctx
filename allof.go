@@ -10,8 +10,10 @@ import (
 // AllOf provides a context.Context that is canceled only after all of the
 // added context.Context instances have been canceled.
 type AllOf struct {
-	ctx context.Context
-	err atomic.Pointer[error]
+	ctx      context.Context
+	cause    atomic.Pointer[error]
+	done     chan error
+	finished chan struct{}
 
 	// The composite pair of fields cv and count cooperate in order to act as
 	// a wait-group, with the difference that it allows the Add method to
@@ -113,9 +115,11 @@ func NewAllOf(contexts ...context.Context) (*AllOf, error) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 
 	allOf := &AllOf{
-		ctx:   ctx,
-		cv:    &sync.Cond{L: new(sync.Mutex)},
-		count: uint64(len(contexts)), // See note below why this must be initialized.
+		ctx:      ctx,
+		done:     make(chan error),
+		finished: make(chan struct{}),
+		cv:       &sync.Cond{L: new(sync.Mutex)},
+		count:    uint64(len(contexts)), // See note below why this must be initialized.
 	}
 
 	// NOTE: Because this AllOf does not yet have any contexts added to it,
@@ -147,7 +151,12 @@ func NewAllOf(contexts ...context.Context) (*AllOf, error) {
 
 		// Cancel the derived context using the error this AllOf instance
 		// stored from when its added contexts closed.
-		cancel(*allOf.err.Load())
+		cause := allOf.cause.Load()
+		if cause != nil {
+			cancel(*cause)
+		}
+
+		close(allOf.finished)
 	}()
 
 	return allOf, nil
@@ -156,24 +165,32 @@ func NewAllOf(contexts ...context.Context) (*AllOf, error) {
 // add blocks until ctx has completed, then decrements the count of goroutines
 // and their respective contexts being waited upon.
 func (allOf *AllOf) add(ctx context.Context) {
-	// Block until ctx has closed.
-	<-ctx.Done()
+	// Block until either ctx has closed, or done channel closed.
+	select {
+	case <-ctx.Done():
+		// When a context.Context is canceled, it stores the first error and
+		// cause because that is the error and cause that caused it to be
+		// canceled. However, the AllOf derived context is not canceled until
+		// all of its source contexts have been canceled, or in other words,
+		// its final source context is canceled. Therefore, rather than
+		// remembering the first error and cause, this remembers the error and
+		// cause of the final source context.
+		cause := context.Cause(ctx)
+		allOf.cause.Store(&cause)
+	case cause, ok := <-allOf.done:
+		if ok {
+			// The first time this branch is used is when the AllOf instance
+			// is canceled and a non-nil cause was provided. Store that
+			// cause. After the channel is closed, however, all of the other
+			// goroutines will enter this branch, but not be given a cause.
+			allOf.cause.Store(&cause)
+		}
+	}
 
-	// When a context.Context is canceled, it stores the first error and cause
-	// because that is the error and cause that caused it to be
-	// canceled. However, the AllOf derived context is not canceled until all
-	// of its source contexts have been canceled, or in other words, its final
-	// source context is canceled. Therefore, rather than remembering the
-	// first error and cause, this remembers the error and cause of the final
-	// source context.
-	err := context.Cause(ctx)
-	allOf.err.Store(&err)
-
-	// NOTE: At this point, the context has closed, but before this method
-	// returns and terminates, it must decrement the number of goroutines
-	// waiting on their respective context.Context instances to close. This
-	// logic is identical to how one might use a condition variable to
-	// implement sync.WaitGroup.Done().
+	// NOTE: Before this method returns and terminates, it must decrement the
+	// number of goroutines waiting on their respective context.Context
+	// instances to close. This logic is identical to how one might use a
+	// condition variable to implement sync.WaitGroup.Done().
 	allOf.cv.L.Lock()
 	if allOf.count == 0 {
 		panic("negative condition variable")
@@ -219,6 +236,22 @@ func (allOf *AllOf) Add(ctx context.Context) error {
 	go allOf.add(ctx)
 
 	return nil
+}
+
+// Cancel is used when the derived context is no longer required, and used to
+// terminate all goroutines spawned by this AllOf instance that track the
+// cancelation of their respective context.Context instances, and then cancels
+// the derived context. This method does not return until all spawned
+// goroutines have been terminated.
+//
+// NOTE: This method does not in any way cancel or otherwise affect the
+// context.Context instances passed to this instance's Add method. It only
+// cancels the derived context and stops the goroutines watching the added
+// contexts.
+func (allOf *AllOf) Cancel(cause error) {
+	allOf.done <- cause
+	close(allOf.done)
+	<-allOf.finished
 }
 
 // Context returns a derived context.Context that will be closed only after
