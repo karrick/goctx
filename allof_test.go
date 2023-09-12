@@ -2,6 +2,7 @@ package goctx
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -133,27 +134,29 @@ func TestAllOf(t *testing.T) {
 	})
 
 	t.Run("Cancel", func(t *testing.T) {
-		derivedCause := io.ErrShortBuffer
+		t.Run("cause of derived context", func(t *testing.T) {
+			derivedCause := errors.New("expected cause")
 
-		ctx1, cancel1 := context.WithCancelCause(context.Background())
-		defer cancel1(io.EOF)
-		ctx2, cancel2 := context.WithCancelCause(context.Background())
-		defer cancel2(io.ErrUnexpectedEOF)
+			ctx1, cancel1 := context.WithCancelCause(context.Background())
+			defer cancel1(io.EOF)
+			ctx2, cancel2 := context.WithCancelCause(context.Background())
+			defer cancel2(io.ErrUnexpectedEOF)
 
-		allOf, err := NewAllOf(ctx1, ctx2)
-		ensureError(t, err)
+			allOf, err := NewAllOf(ctx1, ctx2)
+			ensureError(t, err)
 
-		derivedCtx := allOf.Context()
+			derivedCtx := allOf.Context()
 
-		// Cancel the derived context, blocking until all goroutines
-		// terminated.
-		allOf.Cancel(derivedCause)
+			// Cancel the derived context, blocking until all goroutines
+			// terminated.
+			allOf.Cancel(derivedCause)
 
-		// Because the derived contexts were not canceled, there were no
-		// causes stored in the AllOf instance.
-		if got, want := context.Cause(derivedCtx), derivedCause; got != want {
-			t.Errorf("GOT: %v; WANT: %v", got, want)
-		}
+			// Because the derived contexts were not canceled, there were no
+			// causes stored in the AllOf instance.
+			if got, want := context.Cause(derivedCtx), derivedCause; got != want {
+				t.Errorf("GOT: %v; WANT: %v", got, want)
+			}
+		})
 	})
 
 	t.Run("thousand", func(t *testing.T) {
