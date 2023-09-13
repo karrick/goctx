@@ -199,7 +199,7 @@ func (allOf *AllOf) add(ctx context.Context) {
 	// from when its added contexts canceled.
 	cause := allOf.cause.Load()
 	allOf.derivedCancel(*cause)
-	debug("I have a cause: %v\n", *cause)
+	debug("Canceling derived context: %v\n", *cause)
 
 	close(allOf.finished)
 }
