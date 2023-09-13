@@ -182,13 +182,13 @@ func TestAllOf(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(1)
 		for i := 0; i < number; i++ {
-			go func(wg *sync.WaitGroup, allOf *AllOf, counter *uint32) {
+			go func(startSignal *sync.WaitGroup, allOf *AllOf, counter *uint32) {
 				// Create and attach a local context to the AllOf instance.
 				ctx, cancel := context.WithCancel(context.Background())
 				allOf.Add(ctx)
 
 				// Wait until signaled to continue.
-				wg.Wait()
+				startSignal.Wait()
 
 				// Increment the shared counter.
 				atomic.AddUint32(counter, 1)

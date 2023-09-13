@@ -28,61 +28,65 @@ type AllOf struct {
 //	    ctx1, cancel1 := context.WithCancelCause(context.Background())
 //	    ctx2, cancel2 := context.WithCancelCause(context.Background())
 //
-//	    // Create an AllOf instance that provides a derived context that is closed
-//	    // after all of its composed contexts have been closed. One or more
-//	    // composed contexts must be provided when creating a new AllOf instance.
-//	    allOf, err := NewAllOf(ctx1, ctx2)
+//	    // Create an AllOf instance that provides a derived context that
+//	    // is canceled after all of its composed contexts have been
+//	    // canceled. One or more composed contexts must be provided when
+//	    // creating a new AllOf instance.
+//	    allOf, err := goctx.NewAllOf(ctx1, ctx2)
 //	    if err != nil {
 //	        panic(err)
 //	    }
 //
-//	    // From the AllOf instance obtain the derived context that will be closed
-//	    // after all composed contexts are closed.
+//	    // From the AllOf instance obtain the derived context that will be
+//	    // canceled after all composed contexts are canceled.
 //	    derivedCtx := allOf.Context()
 //
-//	    // For example purposes, spawn a goroutine to block until the derived
-//	    // context is closed.
+//	    // For example purposes, spawn a goroutine to block until the
+//	    // derived context is canceled.
 //	    var wg sync.WaitGroup
 //	    wg.Add(1)
 //	    go func(ctx context.Context) {
 //	        select {
 //	        case <-ctx.Done():
-//	            // NOTE: The derived context has been closed.
+//	            // NOTE: The derived context has been canceled.
 //	        }
 //	        wg.Done()
 //	    }(derivedCtx)
 //
-//	    // Check the number of outstanding composed contexts to be closed.
+//	    // Check the number of outstanding composed contexts to be
+//	    // canceled.
 //	    fmt.Println("count", allOf.Count())
 //
-//	    // New contexts may be added to the AllOf instance even after started
-//	    // waiting for it to complete.
+//	    // New contexts may be added to the AllOf instance even after
+//	    // started waiting for it to complete.
 //	    ctx3, cancel3 := context.WithCancelCause(context.Background())
 //	    allOf.Add(ctx3)
 //
-//	    // Composed contexts may be closed in any arbitrary order, and can be
-//	    // given an error that provides the reason that context was closed.
+//	    // Composed contexts may be canceled in any arbitrary order, and
+//	    // can be given an error that provides the reason that context was
+//	    // canceled.
 //	    cancel2(errors.New("reason 2"))
 //	    cancel3(nil)
 //	    cancel1(errors.New("reason 1"))
 //
-//	    // For example purposes, wait until dervied context has closed.
+//	    // For example purposes, wait until dervied context has canceled.
 //	    wg.Wait()
 //
-//	    // Check the number of outstanding composed contexts to be closed.
+//	    // Check the number of outstanding composed contexts to be
+//	    // canceled.
 //	    fmt.Println("count", allOf.Count())
 //	    fmt.Println("derived error", derivedCtx.Err())
 //
 //	    // Because the order in which the cancellations take place are
-//	    // non-deterministic, this test needs to check each potential cause, and
-//	    // make sure at least one of them matches the cause reported by the
-//	    // derived context.
+//	    // non-deterministic, this test needs to check each potential
+//	    // cause, and make sure at least one of them matches the cause
+//	    // reported by the derived context.
 //	    got := context.Cause(derivedCtx)
 //
 //	    causes := []error{
 //	        errors.New("reason 1"),
 //	        errors.New("reason 2"),
-//	        errors.New("context canceled"), // cancel3 was invoked with nil cause
+//	        errors.New("context canceled"), // cancel3 had nil cause
 //	    }
 //
 //	    var found bool
@@ -121,7 +125,7 @@ func NewAllOf(contexts ...context.Context) (*AllOf, error) {
 	// its count is zero. However, its public Add method returns an error when
 	// adding a context when the count is zero in order to protect against
 	// callers adding contexts to this Allof instance after it has
-	// closed. Therefore, invoke the private add method to add all the
+	// canceled. Therefore, invoke the private add method to add all the
 	// contexts provided to this at instantiation time. For this reason, the
 	// private add method does not increment the count, but rather it takes
 	// place in the public Add method. Which is why the instance's count field
@@ -136,7 +140,7 @@ func NewAllOf(contexts ...context.Context) (*AllOf, error) {
 // add blocks until ctx has completed, then decrements the count of goroutines
 // and their respective contexts being waited upon.
 func (allOf *AllOf) add(ctx context.Context) {
-	// Block until either ctx or the causeOfCancel channel closed.
+	// Block until either ctx or the causeOfCancel channel canceled.
 	select {
 	case <-ctx.Done():
 		// When a context.Context is canceled, it stores the first error and
@@ -145,7 +149,8 @@ func (allOf *AllOf) add(ctx context.Context) {
 		// all of its source contexts have been canceled, or in other words,
 		// its final source context is canceled. Therefore, rather than
 		// remembering the first error and cause, this remembers the error and
-		// cause of the final source context.
+		// cause of the final source context by overwriting whatever was
+		// previously stored with the cause of the most recent cancellation.
 		cause := context.Cause(ctx)
 		allOf.cause.Store(&cause)
 		debug("Upstream context canceled: %v\n", cause)
@@ -153,9 +158,8 @@ func (allOf *AllOf) add(ctx context.Context) {
 		if ok {
 			// The first time this branch is used is when the AllOf instance
 			// is canceled and a non-nil cause was provided. Store that
-			// cause. After the channel is closed, however, all of the other
+			// cause. After the channel is canceled, however, all of the other
 			// goroutines will enter this branch, but not be given a cause.
-			// allOf.cause.Store(&cause)
 			allOf.cause.Store(&cause)
 			debug("Do have cause of cancel ok: %v\n", cause)
 		} else {
@@ -169,16 +173,19 @@ func (allOf *AllOf) add(ctx context.Context) {
 	allOf.countLock.Lock()
 
 	if allOf.count == 0 {
+		// While the count is not currently negative, the next operation is to
+		// decrement it, causing it to be negative if it were a signed
+		// integer.
 		allOf.countLock.Unlock()
-		panic("negative condition variable")
+		panic("negative goroutine counter")
 	}
 
 	// Decrement counter when one fewer goroutines are awaiting completion.
 	allOf.count--
 
 	if allOf.count > 0 {
-		debug("There are one or more goroutines are awaiting completion.\n")
 		allOf.countLock.Unlock()
+		debug("There are one or more goroutines are awaiting completion.\n")
 		return
 	}
 
@@ -189,14 +196,10 @@ func (allOf *AllOf) add(ctx context.Context) {
 	debug("There are no more goroutines awaiting context completion.\n")
 
 	// Cancel the derived context using the error this AllOf instance stored
-	// from when its added contexts closed.
+	// from when its added contexts canceled.
 	cause := allOf.cause.Load()
-	if cause == nil {
-		panic("cannot cancel nil cause")
-	}
-
 	allOf.derivedCancel(*cause)
-	debug("I have a cause: %v\n", cause)
+	debug("I have a cause: %v\n", *cause)
 
 	close(allOf.finished)
 }
@@ -205,30 +208,15 @@ func (allOf *AllOf) add(ctx context.Context) {
 func (allOf *AllOf) Add(ctx context.Context) error {
 	// This method needs this ability to prevent adding additional
 	// context.Context instances to the AllOf instance after the AllOf
-	// instance has already closed.
-	//
-	// Similar but not identical to sync.WaitGroup.Add(1), it performs the
-	// same function, but after locking the condition variable's mutex, it
-	// allows this AllOf struct the ability to branch on the number of
-	// goroutines being waited upon before incrementing and unlocking the
-	// condition variable's mutex.
+	// instance has already canceled.
 	allOf.countLock.Lock()
 	if allOf.count == 0 {
-		return errors.New("cannot add after AllOf complete")
+		return errors.New("cannot add after canceled")
 	}
 	allOf.count++
 	allOf.countLock.Unlock()
 
-	// NOTE: When implementing a WaitGroup via condition variables, the next
-	// step would be to invoke the condition variable's Signal
-	// method. However, Signal is only used to signal to the Go runtime that
-	// the goroutines that have invoked Wait are eligible for running. This
-	// particular structure is implemented in such a way that the only
-	// goroutine that has implemented Wait on this condition variable is
-	// waiting for that condition variable count to be zero, and this method
-	// just incremented that value.
-
-	// Spawn goroutine to wait for ctx to be closed, after which it will
+	// Spawn goroutine to wait for ctx to be canceled, after which it will
 	// decrement count.
 	go allOf.add(ctx)
 
@@ -237,8 +225,8 @@ func (allOf *AllOf) Add(ctx context.Context) error {
 
 // Cancel is used when the derived context is no longer required, and used to
 // terminate all goroutines spawned by this AllOf instance that track the
-// cancelation of their respective context.Context instances, and then cancels
-// the derived context. This method does not return until all spawned
+// cancellation of their respective context.Context instances, and then
+// cancels the derived context. This method does not return until all spawned
 // goroutines have been terminated.
 //
 // NOTE: This method does not in any way cancel or otherwise affect the
@@ -251,8 +239,8 @@ func (allOf *AllOf) Cancel(cause error) {
 	<-allOf.finished
 }
 
-// Context returns a derived context.Context that will be closed only after
-// all of the added contexts have been closed.
+// Context returns a derived context.Context that will be canceled only after
+// all of the added contexts have been canceled.
 func (allOf *AllOf) Context() context.Context { return allOf.derivedCtx }
 
 // Count returns the number of added contexts still waiting for closure.
